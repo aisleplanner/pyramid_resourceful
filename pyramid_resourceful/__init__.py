@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 from resourceful.config import convert_config
 from resourceful.publisher import Publisher
+from resourceful.registry import Registry
+from zope.interface import Interface
 import resourceful
 import logging
 import os
@@ -8,6 +10,10 @@ import wsgiref.util
 from pyramid.settings import asbool
 
 log = logging.getLogger(__name__)
+
+
+class IFanstaticRegistry(Interface):
+    pass
 
 
 def resourceful_config(config, prefix='resourceful.'):
@@ -19,12 +25,14 @@ def resourceful_config(config, prefix='resourceful.'):
 
 
 class Tween(object):
-    def __init__(self, handler, config):
+    def __init__(self, handler, registry):
+        config = registry.settings.copy()
         self.use_application_uri = asbool(
             config.pop('resourceful.use_application_uri', False))
         self.config = resourceful_config(config)
         self.handler = handler
-        self.publisher = Publisher(resourceful.get_library_registry())
+        resourceful_registry = registry.queryUtility(IFanstaticRegistry)
+        self.publisher = Publisher(resourceful_registry)
         self.publisher_signature = self.config.get('publisher_signature')
         self.trigger = '/%s/' % self.publisher_signature
 
@@ -68,34 +76,20 @@ class Tween(object):
 
 
 def tween_factory(handler, registry):
-    return Tween(handler, registry.settings.copy())
+    return Tween(handler, registry)
+
+
+def add_library(config, library):
+    def callback():
+        resourceful_registry = config.registry.queryUtility(IFanstaticRegistry)
+        resourceful_registry.add(library)
+    discriminator = ('add_library', library.name)
+    config.action(discriminator, callable=callback)
 
 
 def includeme(config):
+    resourceful_registry = Registry()
+    config.registry.registerUtility(resourceful_registry, IFanstaticRegistry)
+
     config.add_tween('pyramid_resourceful.tween_factory')
-
-
-def file_callback(dirname, exts=('.less', '.coffee')):
-    """Helper to monitor static resources"""
-    for var, script in (('LESSC', 'lessc'),):
-        if var not in os.environ:
-            for dirname in (os.path.join(os.getcwd(), 'bin'),
-                            os.path.expanduser('~/bin'),
-                            '/usr/local/bin',
-                            '/usr/bin'):
-                    binary = os.path.join(dirname, script)
-                    if os.path.isfile(binary):
-                        os.environ[var] = binary
-                        break
-        if var not in os.environ:
-            print(("Can't find a lessc %s binary" % script))
-
-    def callback():
-        resources = []
-        for root, dirnames, filenames in os.walk(dirname):
-            for filename in filenames:
-                dummy, ext = os.path.splitext(filename)
-                if ext in exts:
-                    resources.append(os.path.join(root, filename))
-        return resources
-    return callback
+    config.add_directive('add_library', add_library)
